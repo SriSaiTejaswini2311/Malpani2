@@ -42,7 +42,7 @@ def extract_clinical_state(message: str, current_state: Dict) -> Dict:
 
     user_content = f"Current State: {json.dumps(current_state)}\nUser Message: {message}"
     
-    model = genai.GenerativeModel('gemini-pro', 
+    model = genai.GenerativeModel('gemini-1.5-flash', 
                                   generation_config={"response_mime_type": "application/json"})
 
     extracted_data = {}

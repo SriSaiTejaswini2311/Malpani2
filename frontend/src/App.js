@@ -41,10 +41,15 @@ function App() {
       });
 
       const data = await response.json();
+
+      // Detect if it is a summary message for special styling
+      const isSummary = data.reply.includes("Section A: My Understanding");
+
       const botMsg = {
         role: 'bot',
         content: data.reply,
-        options: data.options || []
+        options: data.options || [],
+        isSummary: isSummary
       };
 
       setMessages((prev) => [...prev, botMsg]);
@@ -58,6 +63,12 @@ function App() {
 
   return (
     <div className="app-container">
+      {/* Premium Mesh Background */}
+      <div className="mesh-background">
+        <div className="mesh-blob blob-1"></div>
+        <div className="mesh-blob blob-2"></div>
+      </div>
+
       <div className="main-chat-area">
         <div className="chat-header">
           <div className="status-dot"></div>
@@ -69,40 +80,17 @@ function App() {
             <React.Fragment key={i}>
               <div className={`message-wrapper ${m.role}`}>
                 <span className="message-sender">{m.role === 'user' ? 'You' : 'Dr. AI'}</span>
-                <div className="message-bubble">
+                <div className={`message-bubble ${m.isSummary ? 'summary-bubble' : ''}`}>
                   {m.content}
                 </div>
               </div>
               {m.role === 'bot' && m.options && m.options.length > 0 && (
-                <div className="options-container" style={{
-                  display: 'flex',
-                  gap: '10px',
-                  flexWrap: 'wrap',
-                  marginTop: '10px',
-                  paddingLeft: '40px'
-                }}>
+                <div className="options-container">
                   {m.options.map((opt, idx) => (
                     <button
                       key={idx}
+                      className="option-btn"
                       onClick={() => handleOptionClick(opt)}
-                      style={{
-                        padding: '10px 20px',
-                        borderRadius: '20px',
-                        border: '1px solid var(--primary-accent)',
-                        background: 'rgba(6, 182, 212, 0.1)',
-                        color: 'var(--primary-accent)',
-                        cursor: 'pointer',
-                        fontSize: '0.9rem',
-                        transition: 'all 0.2s'
-                      }}
-                      onMouseOver={(e) => {
-                        e.target.style.background = 'var(--primary-accent)';
-                        e.target.style.color = 'white';
-                      }}
-                      onMouseOut={(e) => {
-                        e.target.style.background = 'rgba(6, 182, 212, 0.1)';
-                        e.target.style.color = 'var(--primary-accent)';
-                      }}
                     >
                       {opt}
                     </button>
@@ -128,8 +116,11 @@ function App() {
             onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
             disabled={isLoading}
           />
-          <button className="send-button" onClick={() => sendMessage()} disabled={isLoading}>
-            Send
+          <button className="send-button" onClick={() => sendMessage()} disabled={isLoading || !input.trim()}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="22" y1="2" x2="11" y2="13"></line>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            </svg>
           </button>
         </div>
       </div>
