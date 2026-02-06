@@ -1,42 +1,74 @@
-import os
 import json
-import google.generativeai as genai
-from pathlib import Path
-from dotenv import load_dotenv
 from app.models.case_state import CaseState
-
-# 1. Setup Gemini
-env_path = Path(__file__).resolve().parent.parent.parent / ".env"
-load_dotenv(dotenv_path=env_path)
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 def generate_section_a(state: CaseState) -> str:
     """
-    Generates the 'Section A' summary using Gemini.
+    Generates the 'Section A' summary using DETERMINISTIC templating.
+    Strictly follows the Final Spec example including headers and format.
     """
-    system_prompt = """
-    You are a Medical Scribe assistant to Dr. Malpani.
-    Write a concise, bulleted 'Section A' summary of the patient's history based on the provided JSON.
+    
+    # 1. Age
+    age_str = f"{state.female_age or 'Unclear'}"
+    if state.male_partner_present:
+        age_str += f" (Partner: {state.male_age or 'Unclear'})"
+    elif state.male_partner_type == "Donor":
+        age_str += " (Donor sperm planning)"
+    
+    # 2. Duration
+    dur = state.years_trying
+    if dur is not None:
+        dur_str = f"{int(dur)} years" if dur == int(dur) else f"{dur} years"
+    else:
+        dur_str = "Unclear"
 
-    FORMAT:
-    Section A: Preliminary Assessment
-    - **Age**: [Female Age] (Partner: [Male Age])
-    - **Timeline**: Trying for [Duration]
-    - **Obstetric History**: [Summary of pregnancies]
-    - **Previous Treatments**: [IVF/IUI details or None]
-    - **Tests Status**: [Reviewed/Pending]
-    
-    TONE: Professional, Objective, Clinical.
-    NOTE: If a field is 'None' or 'unclear' in the JSON, explicitly state "Details Pending".
-    """
-    
-    try:
-        model = genai.GenerativeModel('gemini-pro')
-        user_content = f"PATIENT DATA:\n{json.dumps(state.model_dump(), default=str)}"
-        
-        response = model.generate_content([system_prompt, user_content])
-        return response.text.strip()
-        
-    except Exception as e:
-        print(f"Summary AI Error: {e}")
-        return "Error generating AI summary. Please proceed."
+    # 3. Pregnancy
+    if state.has_prior_pregnancies is False:
+        preg_str = "None reported"
+    elif state.has_prior_pregnancies is True:
+        source = state.pregnancy_source or "Unknown source"
+        outcome = state.pregnancy_outcome or "outcome unknown"
+        preg_str = f"{source} pregnancy, {outcome}"
+    else:
+        preg_str = "Unclear"
+
+    # 4. Treatments
+    tx_list = []
+    if state.has_had_treatments is False:
+        tx_str = "None so far"
+    elif state.has_had_treatments is True:
+        # Check specific types
+        if state.treatment_type == "IVF":
+             cycles = f" ({state.ivf_cycles} cycles)" if state.ivf_cycles else ""
+             tx_str = f"IVF{cycles}"
+        elif state.treatment_type == "IUI":
+             cycles = f" ({state.iui_cycles} cycles)" if state.iui_cycles else ""
+             tx_str = f"IUI{cycles}"
+        elif state.treatment_type == "Medications":
+             tx_str = "Medications only"
+        else:
+             tx_str = "Yes (Type unclear)"
+    else:
+        tx_str = "Pending"
+
+    # 5. Tests
+    if not state.tests_done_list or state.tests_done_list == ["None"]:
+        tests_str = "None"
+    else:
+        tests_str = ", ".join(state.tests_done_list)
+
+    # 6. Reports
+    reports_str = state.reports_availability or "No"
+
+    # Construct Final String
+    summary = f"""Section A: My Understanding
+
+- Age: {age_str}
+- Duration trying to conceive: {dur_str}
+- Previous pregnancies: {preg_str}
+- Fertility treatments: {tx_str}
+- Tests done: {tests_str}
+- Reports available: {reports_str}
+
+Please let me know if I’ve understood this correctly so far."""
+
+    return summary

@@ -4,136 +4,172 @@ import re
 from pathlib import Path
 import google.generativeai as genai
 from dotenv import load_dotenv
+from typing import Dict, Any
 
 env_path = Path(__file__).resolve().parent.parent.parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
-def extract_clinical_state(message: str, current_state: dict):
+def extract_clinical_state(message: str, current_state: Dict) -> Dict:
+    """
+    HEURISTIC EXTRACTOR (PHASE 1 - FINAL SPEC)
+    Parses user messages to update the flattened CaseState.
+    """
+    
     system_prompt = """
-    You are an IVF Clinical Data Extractor. Update the JSON state.
+    You are an IVF Clinical Data Extractor. Update the flattened JSON state.
     
-    STRICT VARIABLE MAPPING (Must match Pydantic Model):
-    1. AGES:
-       - 'I am 25' -> demographics.female_age = 25.
-       - 'Husband is 30' -> demographics.male_age = 30.
-       - 'Partner is 29' (neutral) -> demographics.unclear_age_ownership = [25, 29].
+    FIELDS TO EXTRACT (Return as flat keys):
+    - male_partner_type: "Partner", "Donor", "Unsure"
+    - male_partner_present: bool
+    - female_age: int
+    - male_age: int
+    - years_trying: float
+    - has_prior_pregnancies: bool
+    - pregnancy_source: "Natural", "Treatment", "NotSure"
+    - pregnancy_outcome: "Miscarriage", "Ectopic", "Ongoing", "Live birth"
+    - treatment_type: "IVF", "IUI", "Medications", "None"
+    - ivf_cycles: int
+    - iui_cycles: int
+    - tests_done_list: list of strings
+    - reports_availability: "Yes", "No", "Some"
+    - confirmation_status: bool
     
-    2. DURATION (years_trying):
-       - '2 years' -> fertility_timeline.years_trying = 2.0
-       - '6 months' -> fertility_timeline.years_trying = 0.5
-       - 'Since 2020' (if now 2025) -> fertility_timeline.years_trying = 5.0
-
-    3. TESTS / PREGNANCY:
-       - 'No' to reports/tests -> set 'reports_availability_checked' or 'tests_reviewed' to True.
-       - 'No' to pregnancy -> has_prior_pregnancies = False.
-
     OUTPUT FORMAT:
-    {
-        "demographics": {
-            "female_age": 25,
-            "male_age": 30,
-            "unclear_age_ownership": []
-        },
-        "fertility_timeline": {
-            "years_trying": 2.0
-        },
-        "treatments": {
-            "ivf": {"done": false, "total_cycles": 1},
-            "iui": {"done": true, "count": 2}
-        }
-    }
-    Return ONLY raw valid JSON.
+    Return flat JSON keys ONLY.
     """
 
-    user_content = f"State: {json.dumps(current_state)}\nMessage: {message}"
+    user_content = f"Current State: {json.dumps(current_state)}\nUser Message: {message}"
     
-    # Init model
     model = genai.GenerativeModel('gemini-pro', 
                                   generation_config={"response_mime_type": "application/json"})
 
-    # --- 1. LLM EXTRACTION ---
     extracted_data = {}
+    
+    # 1. LLM Extraction
     try:
         response = model.generate_content([system_prompt, user_content])
         cleaned_text = response.text.strip()
         if "```json" in cleaned_text:
             cleaned_text = cleaned_text.split("```json")[1].split("```")[0].strip()
-        
         extracted_data = json.loads(cleaned_text)
-        print(f"DEBUG GEMINI RAW: {json.dumps(extracted_data)}")
     except Exception as e:
         print(f"Gemini Extraction Failed: {e}")
-        extracted_data = {}
 
-    # --- 2. HEURISTIC ENHANCEMENT (REGEX) ---
-    # Always run this to catch things LLM might miss, especially for short answers.
-    print("Running Heuristic Augmentation...")
+    # 2. Heuristic Augmentation (Safety Layer)
     
-    # Init sub-dicts if missing
-    if "demographics" not in extracted_data: extracted_data["demographics"] = {}
-    if "fertility_timeline" not in extracted_data: extracted_data["fertility_timeline"] = {}
-    
-    # A. AGES
-    # 1. Matches "I am 24", "I'm 25", "Im 26", "Me 27" -> Female Age
-    # using flexible whitespace and optional words
-    if not extracted_data["demographics"].get("female_age"):
+    # Partner Status
+    if re.search(r'\b(partner|husband|wife|spouse)\b', message, re.IGNORECASE):
+        extracted_data["male_partner_type"] = "Partner"
+        extracted_data["male_partner_present"] = True
+    elif re.search(r'\b(donor|donor sperm|conception using a donor)\b', message, re.IGNORECASE):
+        extracted_data["male_partner_type"] = "Donor"
+        extracted_data["male_partner_present"] = False
+    elif re.search(r'\b(exploring|not sure|unsure)\b', message, re.IGNORECASE):
+        extracted_data["male_partner_type"] = "Unsure"
+        extracted_data["male_partner_present"] = False
+
+    # Ages
+    nums = re.findall(r'\b\d{2}\b', message)
+    if len(nums) >= 2:
         self_match = re.search(r'\b(i am|i\'m|im|my age is|me)\s*(?:is)?\s*(\d{2})', message, re.IGNORECASE)
-        if self_match:
-            extracted_data["demographics"]["female_age"] = int(self_match.group(2))
+        partner_match = re.search(r'\b(husband|he|partner|spouse|she)(?:\'s)?\s*(?:age)?\s*(?:is)?\s*(\d{2})', message, re.IGNORECASE)
         
-    # 2. Matches "Husband/Partner is 28", "Husband's age is 29" -> Male Age
-    if not extracted_data["demographics"].get("male_age"):
-        # Match 'husband', 'partner', 'spouse', 'he' followed by some text then digits
-        partner_match = re.search(r'\b(husband|he|partner|spouse|wife|she)(?:\'s)?\s*(?:age)?\s*(?:is)?\s*(\d{2})', message, re.IGNORECASE)
-        if partner_match:
-            extracted_data["demographics"]["male_age"] = int(partner_match.group(2))
+        if self_match and partner_match:
+             extracted_data["female_age"] = int(self_match.group(2))
+             extracted_data["male_age"] = int(partner_match.group(2))
+        else:
+             extracted_data["unclear_age_ownership"] = [int(n) for n in nums[:2]]
+    elif len(nums) == 1:
+        val = int(nums[0])
+        if re.search(r'\b(i am|i\'m|im|me)\b', message, re.IGNORECASE):
+            extracted_data["female_age"] = val
+        elif re.search(r'\b(partner|he|husband|spouse)\b', message, re.IGNORECASE) or current_state.get("female_age"):
+            extracted_data["male_age"] = val
+
+    # Ambiguity clarification
+    if "first is mine" in message.lower():
+        ambig = current_state.get("unclear_age_ownership", [])
+        if len(ambig) >= 2:
+            extracted_data["female_age"], extracted_data["male_age"] = ambig[0], ambig[1]
+            extracted_data["unclear_age_ownership"] = []
+    elif "second is mine" in message.lower():
+        ambig = current_state.get("unclear_age_ownership", [])
+        if len(ambig) >= 2:
+            extracted_data["female_age"], extracted_data["male_age"] = ambig[1], ambig[0]
+            extracted_data["unclear_age_ownership"] = []
+
+    # Duration
+    yr_match = re.search(r'(\d+(?:\.\d+)?)\s*years?', message, re.IGNORECASE)
+    mo_match = re.search(r'(\d+)\s*months?', message, re.IGNORECASE)
+    if yr_match:
+        extracted_data["years_trying"] = float(yr_match.group(1))
+        extracted_data["pending_duration_value"] = None
+    elif mo_match:
+        extracted_data["years_trying"] = float(mo_match.group(1)) / 12.0
+        extracted_data["pending_duration_value"] = None
+    else:
+        solitary_num = re.search(r'^\s*(\d+(?:\.\d+)?)\s*$', message)
+        if solitary_num and current_state.get("female_age") and current_state.get("years_trying") is None:
+            extracted_data["pending_duration_value"] = float(solitary_num.group(1))
+
+    # Pregnancy
+    if re.search(r'\b(yes|yeah|yep)\b', message, re.IGNORECASE) and current_state.get("has_prior_pregnancies") is None:
+         extracted_data["has_prior_pregnancies"] = True
+    elif re.search(r'\b(no|nope)\b', message, re.IGNORECASE) and current_state.get("has_prior_pregnancies") is None:
+         extracted_data["has_prior_pregnancies"] = False
     
-    # B. DURATION
-    # Matches: "2 years", "1.5 years", "6 months"
-    years_match = re.search(r'(\d+(?:\.\d+)?)\s*years?', message, re.IGNORECASE)
-    if years_match and not extracted_data["fertility_timeline"].get("years_trying"):
-        extracted_data["fertility_timeline"]["years_trying"] = float(years_match.group(1))
-    
-    months_match = re.search(r'(\d+)\s*months?', message, re.IGNORECASE)
-    if months_match and not extracted_data["fertility_timeline"].get("years_trying"):
-        extracted_data["fertility_timeline"]["years_trying"] = float(months_match.group(1)) / 12.0
+    if "natural" in message.lower(): extracted_data["pregnancy_source"] = "Natural"
+    if "treatment" in message.lower(): extracted_data["pregnancy_source"] = "Treatment"
+    for outcome in ["miscarriage", "ectopic", "ongoing", "live birth"]:
+        if outcome in message.lower():
+            extracted_data["pregnancy_outcome"] = outcome.capitalize()
 
-    # C. CONTEXTUAL 'NO'
-    negative_match = re.search(r'\b(no|nope|never|not really|none)\b', message, re.IGNORECASE)
-    if negative_match:
-        # Check missing fields in order
-        if current_state.get("has_prior_pregnancies") is None and "has_prior_pregnancies" not in extracted_data:
-            extracted_data["has_prior_pregnancies"] = False
-        
-        elif current_state.get("treatments", {}).get("ivf", {}).get("done") is None:
-            if "treatments" not in extracted_data: extracted_data["treatments"] = {}
-            if "ivf" not in extracted_data["treatments"]: extracted_data["treatments"]["ivf"] = {}
-            if extracted_data["treatments"]["ivf"].get("done") is None:
-                extracted_data["treatments"]["ivf"]["done"] = False
-            extracted_data["has_had_treatments"] = False
-            extracted_data["treatments_reviewed"] = True
-        
-        elif current_state.get("tests_reviewed") is False:
-             extracted_data["tests_reviewed"] = True
-             extracted_data["demographics"]["all_tests_none"] = True
-        
-        elif current_state.get("reports_availability_checked") is False:
-             extracted_data["reports_availability_checked"] = True
+    # Treatments
+    if "ivf" in message.lower():
+        extracted_data["has_had_treatments"] = True
+        extracted_data["treatment_type"] = "IVF"
+        extracted_data["treatments_reviewed"] = True
+    elif "iui" in message.lower():
+        extracted_data["has_had_treatments"] = True
+        extracted_data["treatment_type"] = "IUI"
+        extracted_data["treatments_reviewed"] = True
+    elif "no treatments" in message.lower() or "no treatment" in message.lower():
+        extracted_data["has_had_treatments"] = False
+        extracted_data["treatment_type"] = "None"
+        extracted_data["treatments_reviewed"] = True
 
-    # D. CONTEXTUAL 'YES' (Breaking the Loop)
-    affirmative_match = re.search(r'\b(yes|yeah|sure|yep|correct)\b', message, re.IGNORECASE)
-    if affirmative_match:
-         # If asking about treatments (and ivf.done is None), mark distinct generic flag.
-         if current_state.get("treatments", {}).get("ivf", {}).get("done") is None:
-             if current_state.get("has_had_treatments") is None:
-                  extracted_data["has_had_treatments"] = True
-         
-         # Fallback for Tests: if we are at tests stage and user says yes, assuming "some tests done"
-         if current_state.get("treatments_reviewed") is True and current_state.get("tests_reviewed") is False:
-              # This triggers the "which tests?" follow up in orchestrator if needed
-              pass
+    # Cycles
+    cycles_match = re.search(r'(\d+)\s*cycles', message, re.IGNORECASE)
+    if cycles_match:
+        if extracted_data.get("treatment_type") == "IVF" or current_state.get("treatment_type") == "IVF":
+            extracted_data["ivf_cycles"] = int(cycles_match.group(1))
+        else:
+            extracted_data["iui_cycles"] = int(cycles_match.group(1))
 
-    print(f"DEBUG FINAL EXTRACTED: {json.dumps(extracted_data)}")
+    # Tests
+    tests_map = {"hormonal": "Hormonal blood tests", "ultrasound": "Ultrasound scans", "tube": "Tube testing (HSG / similar)", "hsg": "Tube testing (HSG / similar)", "semen": "Semen analysis"}
+    found_tests = [label for kw, label in tests_map.items() if kw in message.lower()]
+    if found_tests:
+        # Avoid overwriting existing list if it's a multi-step conversation, but for now simple update
+        extracted_data["tests_done_list"] = found_tests
+        extracted_data["tests_reviewed"] = True
+    elif "none" in message.lower() and "above" in message.lower():
+        extracted_data["tests_done_list"] = ["None"]
+        extracted_data["tests_reviewed"] = True
+
+    # Reports
+    if "have them" in message.lower():
+        extracted_data["reports_availability"] = "Yes"
+        extracted_data["reports_availability_checked"] = True
+    elif "collect" in message.lower():
+        extracted_data["reports_availability"] = "No"
+        extracted_data["reports_availability_checked"] = True
+
+    # Confirmation
+    if "correct" in message.lower() or "yes" in message.lower():
+         if current_state.get("years_trying") and current_state.get("confirmation_status") is None:
+              extracted_data["confirmation_status"] = True
+
     return extracted_data
