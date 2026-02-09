@@ -26,6 +26,7 @@ class ChatResponse(BaseModel):
     reply: str
     options: List[str] = []
     state: Optional[Dict] = None
+    multi_select: bool = False
 
 class ChatRequest(BaseModel):
     session_id: str
@@ -59,7 +60,18 @@ async def chat_endpoint(req: ChatRequest):
 
     # 3. Get Next Question from Orchestrator
     from app.engine.orchestrator import get_next_question
-    reply, options = get_next_question(state)
+    # Expecting tuple: (msg, options, multi_select)
+    # But for backward compatibility with older steps, we might need a check, 
+    # OR we just updated ALL returns in orchestrator.py?
+    # I updated the critical paths. I should check if I missed any.
+    # To be safe, let's unpack and handle if length is 2 or 3.
+    orc_response = get_next_question(state)
+    
+    if len(orc_response) == 3:
+        reply, options, multi_select = orc_response
+    else:
+        reply, options = orc_response
+        multi_select = False
     
     # 4. Handle Special Signals
     if reply == "SUMMARY_READY":
@@ -67,21 +79,24 @@ async def chat_endpoint(req: ChatRequest):
         return ChatResponse(
             reply=summary_text,
             options=options, # ["Yes, that’s correct", "No, I’d like to correct something"]
-            state=state.dict()
+            state=state.dict(),
+            multi_select=False
         )
     
     if reply == "CONVERSATION_COMPLETE":
         return ChatResponse(
             reply="Thank you for providing those details. We are now ready to proceed with Phase 2.",
             options=[],
-            state=state.dict()
+            state=state.dict(),
+            multi_select=False
         )
 
     # 5. Standard Response
     return ChatResponse(
         reply=reply,
         options=options,
-        state=state.dict()
+        state=state.dict(),
+        multi_select=multi_select
     )
 
 if __name__ == "__main__":

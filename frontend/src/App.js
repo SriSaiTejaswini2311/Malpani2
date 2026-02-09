@@ -16,12 +16,28 @@ function App() {
     setSessionId(storedId);
   }, []);
 
+  const [currentSelections, setCurrentSelections] = useState([]);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
   const handleOptionClick = (optionText) => {
     sendMessage(optionText);
+  };
+
+  const handleCheckboxChange = (option, isChecked) => {
+    if (isChecked) {
+      setCurrentSelections(prev => [...prev, option]);
+    } else {
+      setCurrentSelections(prev => prev.filter(item => item !== option));
+    }
+  };
+
+  const submitMultiSelection = () => {
+    if (currentSelections.length === 0) return;
+    const joined = currentSelections.join(", "); // Send as comma-separated string
+    sendMessage(joined);
   };
 
   const sendMessage = async (textOverride = null) => {
@@ -31,6 +47,7 @@ function App() {
     const userMsg = { role: 'user', content: textToSend };
     setMessages((prev) => [...prev, userMsg]);
     if (!textOverride) setInput("");
+    setCurrentSelections([]); // Clear selections on send
     setIsLoading(true);
 
     try {
@@ -49,6 +66,7 @@ function App() {
         role: 'bot',
         content: data.reply,
         options: data.options || [],
+        multi_select: data.multi_select || false,
         isSummary: isSummary
       };
 
@@ -86,15 +104,47 @@ function App() {
               </div>
               {m.role === 'bot' && m.options && m.options.length > 0 && (
                 <div className="options-container">
-                  {m.options.map((opt, idx) => (
-                    <button
-                      key={idx}
-                      className="option-btn"
-                      onClick={() => handleOptionClick(opt)}
-                    >
-                      {opt}
-                    </button>
-                  ))}
+                  {m.multi_select ? (
+                    <div className="multi-select-wrapper">
+                      {m.options.map((opt, idx) => (
+                        <label key={idx} className="checkbox-option">
+                          <input
+                            type="checkbox"
+                            value={opt}
+                            disabled={i !== messages.length - 1} // Only active for latest message
+                            onChange={(e) => {
+                              // We need local state for this, but mapping 'messages' loop is hard.
+                              // Better approach: The INPUT AREA should handle the selection state for the LATEST message?
+                              // Or we keep a "currentSelections" state in App component?
+                              handleCheckboxChange(opt, e.target.checked);
+                            }}
+                            checked={currentSelections.includes(opt)}
+                          />
+                          <span className="checkbox-label">{opt}</span>
+                        </label>
+                      ))}
+                      {i === messages.length - 1 && (
+                        <button
+                          className="done-btn"
+                          onClick={submitMultiSelection}
+                          disabled={currentSelections.length === 0}
+                        >
+                          Done
+                        </button>
+                      )}
+                    </div>
+                  ) : (
+                    m.options.map((opt, idx) => (
+                      <button
+                        key={idx}
+                        className="option-btn"
+                        onClick={() => handleOptionClick(opt)}
+                        disabled={i !== messages.length - 1}
+                      >
+                        {opt}
+                      </button>
+                    ))
+                  )}
                 </div>
               )}
             </React.Fragment>
