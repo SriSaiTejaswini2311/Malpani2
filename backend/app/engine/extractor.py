@@ -59,10 +59,7 @@ def extract_clinical_state(message: str, current_state: Dict) -> Dict:
 
     # 2. Heuristic Augmentation (Safety Layer)
     
-    # 2. Heuristic Augmentation (Safety Layer)
-    
     # Partner Status
-    # Fix: Ensure we don't match "no partner" as "Partner"
     if re.search(r'\b(partner|husband|wife|spouse)\b', message, re.IGNORECASE):
         # Negative lookbehind/lookahead wrapper or simpler check
         if not re.search(r'\b(no|without|not)\s+(partner|husband|wife|spouse)\b', message, re.IGNORECASE):
@@ -76,11 +73,6 @@ def extract_clinical_state(message: str, current_state: Dict) -> Dict:
         extracted_data["male_partner_present"] = False
 
     # Ages
-    # Global Guard: Only extract ages if we are missing them.
-    # Exception: Explicit Ambiguity Resolution (we check regardless of missing or not, incase user is correcting).
-    # BUT, we must be careful not to pick up dates/cycle lengths.
-    
-    # Fix: Ignore "days" context (e.g. 21-25 days)
     if "days" in message.lower() or "cycle" in message.lower():
         pass # Skip age extraction if discussing cycles/days explicitly
     elif current_state.get("female_age") is None or current_state.get("male_age") is None:
@@ -105,28 +97,19 @@ def extract_clinical_state(message: str, current_state: Dict) -> Dict:
                      extracted_data["male_age"] = int(partner_match.group(2))
                      extracted_data["unclear_age_ownership"] = []
                 else:
-                     # Only flag ambiguity if we reasonably think these are ages. 
-                     # If Donor flow, we shouldn't care about 2 ages.
                      if current_state.get("male_partner_present") is not False: 
                         extracted_data["unclear_age_ownership"] = [int(n) for n in nums[:2]]
             elif len(nums) == 1:
                 val = int(nums[0])
-                # Check explicit pronouns first
                 if re.search(r'\b(i am|i\'m|im|me)\b', message, re.IGNORECASE):
                     extracted_data["female_age"] = val
                 elif re.search(r'\b(partner|he|husband|spouse)\b', message, re.IGNORECASE):
                     extracted_data["male_age"] = val
                 else:
-                    # No explicit pronouns. Check context.
-                    # If Donor flow (no partner), it must be Female Age.
                     if current_state.get("male_partner_present") is False:
                         extracted_data["female_age"] = val
-                    # If Partner flow, and Female Age exists, assume Male Age.
                     elif current_state.get("female_age"):
                         extracted_data["male_age"] = val
-                    # If Partner flow, and Female Age missing, assume Female Age (Agent usually asks Female first).
-                    # But risk of ambiguity if user says "He is 25". (Covered by elif above).
-                    # So if no pronouns and no female age, assume Female Age.
                     else:
                         extracted_data["female_age"] = val
 
@@ -143,7 +126,6 @@ def extract_clinical_state(message: str, current_state: Dict) -> Dict:
             extracted_data["unclear_age_ownership"] = []
 
     # Relationship (Partner Context)
-    # Context-Aware Heuristic
     if current_state.get("male_age") and current_state.get("first_marriage") is None:
         if re.search(r'\b(yes|yeah|yep)\b', message, re.IGNORECASE):
             extracted_data["first_marriage"] = True
@@ -163,30 +145,21 @@ def extract_clinical_state(message: str, current_state: Dict) -> Dict:
              extracted_data["years_married"] = float(yr_match.group(1))
              just_extracted_marriage = True
         else:
-             # Solitary number fallback
              solitary = re.search(r'^\s*(\d+(?:\.\d+)?)\s*$', message)
              if solitary: 
                  extracted_data["years_married"] = float(solitary.group(1))
                  just_extracted_marriage = True
 
     # Duration
-    # STRICT CONTEXT GUARD:
-    # Do NOT extract duration if:
-    # 1. We just extracted years_married (it's the same number, e.g. "3 years").
-    # 2. We are past the pregnancy step (e.g. answering Menarche logic "16 years").
-    #    - Proxy: has_prior_pregnancies is NOT None.
-    #    - Unless explicit "trying" keyword is used.
-    
     is_post_duration_step = current_state.get("has_prior_pregnancies") is not None
     should_parse_duration = False
     
     if "trying" in message.lower() or "conceiv" in message.lower():
-        should_parse_duration = True # Keyword override
+        should_parse_duration = True
     elif not just_extracted_marriage and not is_post_duration_step:
-        should_parse_duration = True # Standard flow context (between Marriage and Pregnancy)
+        should_parse_duration = True
         
     if should_parse_duration:
-        # Zero Duration Handling
         if re.search(r'\b(0|zero|not yet|never)\b', message, re.IGNORECASE):
             extracted_data["years_trying"] = 0.0
             extracted_data["pending_duration_value"] = None
@@ -201,22 +174,17 @@ def extract_clinical_state(message: str, current_state: Dict) -> Dict:
                 extracted_data["pending_duration_value"] = None
             else:
                 solitary_num = re.search(r'^\s*(\d+(?:\.\d+)?)\s*$', message)
-                # Ambiguity check: Only if solitary and fitting context
                 if solitary_num and current_state.get("female_age") and current_state.get("years_trying") is None:
                     if "years_married" not in extracted_data:
                         extracted_data["pending_duration_value"] = float(solitary_num.group(1))
 
     # Pregnancy
-    # Context: Duration known, has_prior_pregnancies None
     if current_state.get("years_trying") is not None and current_state.get("has_prior_pregnancies") is None:
         if re.search(r'\b(yes|yeah|yep)\b', message, re.IGNORECASE):
              extracted_data["has_prior_pregnancies"] = True
         elif re.search(r'\b(no|nope)\b', message, re.IGNORECASE):
              extracted_data["has_prior_pregnancies"] = False
-    # Keyword fallback
     elif re.search(r'\b(yes|yeah|yep)\b', message, re.IGNORECASE) and current_state.get("has_prior_pregnancies") is None:
-         # Safer to only do this if "pregnancy" mentioned? No, prompts are "Has there ever...?" -> "Yes"
-         # So we keep it but beware collisions.
          pass 
 
     if "natural" in message.lower(): extracted_data["pregnancy_source"] = "Natural"
@@ -226,8 +194,6 @@ def extract_clinical_state(message: str, current_state: Dict) -> Dict:
             extracted_data["pregnancy_outcome"] = outcome.capitalize()
 
     # Menstrual History
-    # Regularity
-    # Context: Pregnancy history known (Step 5 done), Regularity None (Step 6 pending)
     if current_state.get("has_prior_pregnancies") is not None and current_state.get("menstrual_regularity") is None:
         if re.search(r'\b(yes|yeah|regular)\b', message, re.IGNORECASE) and "ir" not in message.lower():
             extracted_data["menstrual_regularity"] = "Regular"
@@ -235,14 +201,12 @@ def extract_clinical_state(message: str, current_state: Dict) -> Dict:
             extracted_data["menstrual_regularity"] = "Irregular"
         elif "not sure" in message.lower():
              extracted_data["menstrual_regularity"] = "NotSure"
-    # Keyword matches (fallback)
     elif "regular" in message.lower() and "ir" not in message.lower():
         extracted_data["menstrual_regularity"] = "Regular"
     elif "irregular" in message.lower() or "varies" in message.lower():
         extracted_data["menstrual_regularity"] = "Irregular"
     
     # Cycle Length
-    # Handle different dash types (hyphen -, en-dash –, em-dash —)
     if re.search(r'\b(21|26|31)[-–—to\s]+', message, re.IGNORECASE): 
          extracted_data["cycle_length"] = message.strip()
     
@@ -263,7 +227,6 @@ def extract_clinical_state(message: str, current_state: Dict) -> Dict:
         elif "rarely" in message.lower(): extracted_data["sexual_difficulty"] = "Rarely"
     elif "not applicable" in message.lower():
         extracted_data["sexual_difficulty"] = "NotApplicable"
-    # Context: Menarche known (Step 6 Done), Sexual Difficulty None (Step 6E Pending)
     elif current_state.get("menarche_age") and current_state.get("sexual_difficulty") is None:
         if "without" in message.lower() or "yes" in message.lower():
              extracted_data["sexual_difficulty"] = "None"
@@ -292,6 +255,26 @@ def extract_clinical_state(message: str, current_state: Dict) -> Dict:
             extracted_data["ivf_cycles"] = int(cycles_match.group(1))
         else:
             extracted_data["iui_cycles"] = int(cycles_match.group(1))
+            
+    # IVF Details (Fresh/Frozen & Outcome)
+    if current_state.get("treatment_type") == "IVF" and current_state.get("ivf_cycles"):
+        if "fresh" in message.lower():
+            extracted_data["last_ivf_transfer_type"] = "Fresh"
+        elif "frozen" in message.lower():
+            extracted_data["last_ivf_transfer_type"] = "Frozen"
+            
+        if "beta negative" in message.lower() or "negative" in message.lower():
+            extracted_data["last_ivf_outcome"] = "Beta Negative"
+        elif "biochemical" in message.lower() or "chemical" in message.lower():
+            extracted_data["last_ivf_outcome"] = "Biochemical Pregnancy"
+        elif "miscarriage" in message.lower():
+            extracted_data["last_ivf_outcome"] = "Miscarriage"
+        elif "ectopic" in message.lower():
+            extracted_data["last_ivf_outcome"] = "Ectopic Pregnancy"
+        elif "ongoing" in message.lower():
+            extracted_data["last_ivf_outcome"] = "Ongoing Pregnancy"
+        elif "live birth" in message.lower() or "baby" in message.lower():
+            extracted_data["last_ivf_outcome"] = "Live Birth"
 
     # Tests (Female & Male Context Aware)
     tests_map = {
@@ -302,30 +285,21 @@ def extract_clinical_state(message: str, current_state: Dict) -> Dict:
         "laparoscopy": "Tube testing (HSG / Laparoscopy / HyCoSy)"
     }
     
-    # Are we in Message context (explicit keywords)?
     male_keywords = ["semen", "partner", "his"]
     is_explicit_male = any(kw in message.lower() for kw in male_keywords)
     
-    # Context Check: If tests_reviewed is True, assume we are now answering Male Tests (if Partner flow)
-    # Note: Extractor doesn't know flow type easily, but tests_reviewed=True implies Female done.
     is_implicit_male_step = current_state.get("tests_reviewed") is True
     
     if is_explicit_male or is_implicit_male_step:
-        # Male Tests Logic
         male_tests = []
         if "semen" in message.lower(): male_tests.append("Semen analysis")
         if "hormonal" in message.lower(): male_tests.append("Hormonal blood tests")
         if "genetic" in message.lower(): male_tests.append("Genetic tests")
         if "none" in message.lower(): male_tests.append("None")
         
-        # Only update if we found something or context strongly implies it
         if male_tests:
-            # Append if exists? No, usually comprehensive answer.
-            # If implicit step, assume overwriting or appending.
-            # Let's overwrite for simplicity unless partial.
             extracted_data["male_tests_done_list"] = male_tests
     else:
-        # Female Tests (default)
         found_tests = [label for kw, label in tests_map.items() if kw in message.lower()]
         if found_tests:
             extracted_data["tests_done_list"] = found_tests
@@ -346,5 +320,114 @@ def extract_clinical_state(message: str, current_state: Dict) -> Dict:
     if "correct" in message.lower() or "yes" in message.lower():
          if current_state.get("reports_availability_checked") or (current_state.get("tests_reviewed") and not current_state.get("tests_done_list")):
               extracted_data["confirmation_status"] = True
+
+    # --- PHASE 1 REFINEMENT: Test Date Extraction ---
+    if current_state.get("active_date_inquiry"):
+        test_name = current_state["active_date_inquiry"]
+        date_str = None
+        
+        # Reuse Regex from Phase 2
+        # Month Year (Jan 2024 or January 2024)
+        mon_yr = re.search(r'\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[\s,.-]+(\d{4})', message, re.IGNORECASE)
+        # Full Date (DD/MM/YYYY or similar)
+        full_date = re.search(r'(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})', message)
+        # Year only
+        year_only = re.search(r'\b(20\d{2})\b', message)
+        
+        if mon_yr:
+            months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+            m_str = mon_yr.group(1).lower()[:3]
+            m_idx = months.index(m_str) + 1
+            y_str = mon_yr.group(2)
+            date_str = f"{y_str}-{m_idx:02d}-01" # Default to 1st
+        elif full_date:
+            d, m, y = full_date.group(1), full_date.group(2), full_date.group(3)
+            if len(y) == 2: y = "20" + y
+            date_str = f"{y}-{int(m):02d}-{int(d):02d}"
+        elif year_only:
+            date_str = f"{year_only.group(1)}-01-01"
+        elif "last month" in message.lower():
+            from datetime import date, timedelta
+            today = date.today()
+            d = today - timedelta(days=30)
+            date_str = d.isoformat()
+            
+        if date_str:
+            # We need to update the dictionary `reported_test_dates`
+            # CaseState stores it as a Dict. 
+            # We need to make sure we don't overwrite existing if multi-turn? 
+            # Extractor returns partial updates.
+            # We need to get the existing dict from state, update it, and return new dict.
+            existing_dates = current_state.get("reported_test_dates", {})
+            # Ensure it's a dict (pydantic model conversion might leave it as is?)
+            if not isinstance(existing_dates, dict): existing_dates = {}
+            
+            existing_dates[test_name] = date_str
+            extracted_data["reported_test_dates"] = existing_dates
+            
+            # Note: We do NOT clear `active_date_inquiry` here. Orchestrator checks if date exists.
+            
+    # --- PHASE 2 EXTRACTION ---
+    if current_state.get("phase") == "PHASE2":
+        # 1. Check for "Done Uploading" / "No Reports"
+        if "done" in message.lower() or "no report" in message.lower() or "do not have" in message.lower():
+            extracted_data["phase2_uploads_complete"] = True
+            
+        # 2. Extract Dates for Pending Documents
+        # Find doc with missing date
+        docs = current_state.get("phase2_documents", [])
+        pending_doc_idx = -1
+        # Safe iteration
+        if docs:
+            for i, doc in enumerate(docs):
+                is_dict = isinstance(doc, dict)
+                val = doc.get("test_date") if is_dict else getattr(doc, "test_date", None)
+                
+                if val is None:
+                    pending_doc_idx = i
+                    break
+        
+        if pending_doc_idx != -1:
+            date_str = None
+            
+            # Month Year (Jan 2024 or January 2024)
+            mon_yr = re.search(r'\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[\s,.-]+(\d{4})', message, re.IGNORECASE)
+            # Full Date (DD/MM/YYYY)
+            full_date = re.search(r'(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})', message)
+            # Year only
+            year_only = re.search(r'\b(20\d{2})\b', message)
+            
+            if mon_yr:
+                months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+                m_str = mon_yr.group(1).lower()[:3]
+                m_idx = months.index(m_str) + 1
+                y_str = mon_yr.group(2)
+                date_str = f"{y_str}-{m_idx:02d}-01"
+            elif full_date:
+                d, m, y = full_date.group(1), full_date.group(2), full_date.group(3)
+                if len(y) == 2: y = "20" + y
+                date_str = f"{y}-{int(m):02d}-{int(d):02d}"
+            elif year_only:
+                date_str = f"{year_only.group(1)}-01-01"
+            elif "last month" in message.lower():
+                from datetime import date, timedelta
+                today = date.today()
+                d = today - timedelta(days=30)
+                date_str = d.isoformat()
+            
+            if date_str:
+                updated_docs = list(docs)
+                if isinstance(updated_docs[pending_doc_idx], dict):
+                     updated_docs[pending_doc_idx]["test_date"] = date_str
+                else: 
+                     try:
+                        d_dict = updated_docs[pending_doc_idx].dict()
+                     except AttributeError:
+                        d_dict = dict(updated_docs[pending_doc_idx])
+                     
+                     d_dict["test_date"] = date_str
+                     updated_docs[pending_doc_idx] = d_dict
+                     
+                extracted_data["phase2_documents"] = updated_docs
 
     return extracted_data

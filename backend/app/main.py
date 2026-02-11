@@ -99,6 +99,100 @@ async def chat_endpoint(req: ChatRequest):
         multi_select=multi_select
     )
 
+from fastapi import UploadFile, File, Form
+
+@app.post("/upload")
+async def upload_document(
+    session_id: str = Form(...),
+    file: UploadFile = File(...)
+):
+    # 1. Get Session
+    if session_id not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+    state = sessions[session_id]
+    
+    # 2. Detect Test Type
+    from app.engine.phase2 import detect_test_type
+    test_type = detect_test_type(file.filename)
+    
+    if test_type == "UNKNOWN_TEST":
+        return {
+            "status": "error",
+            "message": "I could not identify the test type from the filename. Please rename it to include the test name (e.g., 'AMH Report.pdf').",
+            "detected_type": None
+        }
+
+    # 3. Validate against Phase 1 History
+    # Construct allowed list
+    allowed_tests = set()
+    if state.tests_done_list:
+        allowed_tests.update(state.tests_done_list)
+    if state.male_tests_done_list:
+        allowed_tests.update(state.male_tests_done_list)
+        
+    # Mapping for generic terms to allowed
+    # If detected 'Semen Analysis' but user said 'Semen analysis', it matches (logic handles this via lower case checks in extractor usually but here we have normalized strings).
+    # Let's check for containment or direct match.
+    # We need to be careful. If user said "Hormonal blood tests", and uploads "AMH", is it allowed?
+    # Yes, AMH is a hormonal test.
+    # Simple Logic: If "None" is in list, no uploads allowed?
+    # Or strict check?
+    # User feedback: "Validate test is part of Phase 1 tests_done"
+    
+    # Heuristic for Validation:
+    # If exact match in allowed_tests -> OK
+    # If test_type is "AMH" and "Hormonal" in allowed -> OK
+    # If test_type is "FSH" and "Hormonal" in allowed -> OK
+    
+    valid_upload = False
+    
+    # Normalization helper
+    def normalize(s): return s.lower().strip()
+    
+    allowed_normalized = [normalize(t) for t in allowed_tests]
+    type_normalized = normalize(test_type)
+    
+    if type_normalized in allowed_normalized:
+        valid_upload = True
+    else:
+        # Hierarchy Check
+        hormonal_subtypes = ["amh", "fsh", "lh", "tsh", "prolactin", "estradiol"]
+        if type_normalized in hormonal_subtypes and any("hormonal" in t for t in allowed_normalized):
+            valid_upload = True
+            
+        if type_normalized == "semen analysis" and any("semen" in t for t in allowed_normalized):
+            valid_upload = True
+            
+        if type_normalized == "hsg" and any("tube" in t for t in allowed_normalized):
+            valid_upload = True
+            
+    if not valid_upload:
+         return {
+            "status": "error",
+            "message": f"This test ({test_type}) was not mentioned in your history. I am only entering reports for tests we discussed.",
+            "detected_type": test_type
+        }
+
+    # 4. Update State
+    from datetime import date
+    new_doc = {
+        "test_name": test_type,
+        "filename": file.filename,
+        "upload_date": date.today().isoformat(),
+        "test_date": None, # Pending user input
+        "validity_status": None
+    }
+    
+    # Avoid Duplicates
+    if not any(d["filename"] == file.filename for d in state.phase2_documents):
+        state.phase2_documents.append(new_doc)
+        
+    return {
+        "status": "success",
+        "message": f"Received {test_type}. When was this test done?", # Frontend might display this or orchestrator next turn
+        "document": new_doc
+    }
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

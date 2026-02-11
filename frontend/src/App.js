@@ -79,6 +79,35 @@ function App() {
     }
   };
 
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    setIsLoading(true);
+    const formData = new FormData();
+    formData.append('session_id', sessionId);
+    formData.append('file', file);
+
+    try {
+      const response = await fetch('http://localhost:8000/upload', {
+        method: 'POST',
+        body: formData
+      });
+      const data = await response.json();
+
+      if (data.status === 'success') {
+        setMessages(prev => [...prev, { role: 'bot', content: data.message }]);
+      } else {
+        setMessages(prev => [...prev, { role: 'bot', content: `Error: ${data.message}` }]);
+      }
+    } catch (error) {
+      console.error("Upload error:", error);
+      setMessages(prev => [...prev, { role: 'bot', content: "Failed to upload file." }]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
     <div className="app-container">
       {/* Premium Mesh Background */}
@@ -113,9 +142,6 @@ function App() {
                             value={opt}
                             disabled={i !== messages.length - 1} // Only active for latest message
                             onChange={(e) => {
-                              // We need local state for this, but mapping 'messages' loop is hard.
-                              // Better approach: The INPUT AREA should handle the selection state for the LATEST message?
-                              // Or we keep a "currentSelections" state in App component?
                               handleCheckboxChange(opt, e.target.checked);
                             }}
                             checked={currentSelections.includes(opt)}
@@ -158,6 +184,19 @@ function App() {
         </div>
 
         <div className="input-area">
+          <div className="action-buttons">
+            {/* Upload Button - Visible always or only when context implies? 
+                 Let's make it always visible but maybe styled subtly. 
+                 Or better: Check if last bot message asks for uploads?
+                 For now, a permanent paperclip icon.
+             */}
+            <label className="upload-btn" title="Upload Report">
+              <input type="file" onChange={handleFileUpload} style={{ display: 'none' }} accept=".pdf,.jpg,.jpeg,.png" />
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+              </svg>
+            </label>
+          </div>
           <input
             className="chat-input"
             value={input}

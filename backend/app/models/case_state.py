@@ -45,6 +45,8 @@ class CaseState(BaseModel):
     treatment_type: Optional[Literal["IVF", "IUI", "Medications", "None"]] = None
     treatments_reviewed: bool = False
     ivf_cycles: Optional[int] = None
+    last_ivf_transfer_type: Optional[Literal["Fresh", "Frozen", "NotSure"]] = None
+    last_ivf_outcome: Optional[str] = None
     iui_cycles: Optional[int] = None
     
     # 8. Tests
@@ -57,12 +59,21 @@ class CaseState(BaseModel):
     semen_analysis_result: Optional[Literal["Normal", "Abnormal", "NotSure"]] = None
     semen_report_available: Optional[bool] = None
 
+    # Date Collection (Phase 1 Refinement)
+    reported_test_dates: Dict[str, str] = {} # e.g. {"AMH": "2024-01-01"}
+    active_date_inquiry: Optional[str] = None # The test we are currently asking about
+
     # 9. Reports
     reports_availability: Optional[Literal["Yes", "No", "Some"]] = None
     reports_availability_checked: bool = False
     
     # 9. Confirmation
     confirmation_status: Optional[bool] = None # True (Correct), False (Needs Fix)
+
+    # --- PHASE 2 STATE ---
+    phase: Literal["PHASE1", "PHASE2", "COMPLETE"] = "PHASE1"
+    phase2_documents: List[Dict[str, Any]] = [] 
+    phase2_verification_complete: bool = False
 
     class Config:
         use_enum_values = True
